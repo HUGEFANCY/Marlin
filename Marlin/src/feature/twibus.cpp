@@ -62,6 +62,21 @@ void TWIBus::addbytes(char src[], uint8_t bytes) {
   debug(PSTR("addbytes"), bytes);
   while (bytes--) addbyte(*src++);
 }
+//ROBIN
+void TWIBus::addbyte_as_byte(const byte c) {
+  if (buffer_s >= COUNT(buffer)) return;
+  buffer[buffer_s++] = c;
+  #if ENABLED(DEBUG_TWIBUS)
+    debug(PSTR("addbyte"), c);
+  #endif
+}
+//ROBIN
+void TWIBus::addbytes_as_bytes(byte src[], uint8_t bytes) {
+  #if ENABLED(DEBUG_TWIBUS)
+    debug(PSTR("addbytes as bytes"), bytes);
+  #endif
+  while (bytes--) addbyte(*src++);
+}
 
 void TWIBus::addstring(char str[]) {
   debug(PSTR("addstring"), str);
@@ -100,11 +115,12 @@ void TWIBus::echobuffer(const char pref[], uint8_t adr) {
 
 bool TWIBus::request(const uint8_t bytes) {
   if (!addr) return false;
+  Wire.begin();
 
   debug(PSTR("request"), bytes);
 
   // requestFrom() is a blocking function
-  if (Wire.requestFrom(addr, bytes) == 0) {
+  if (Wire.requestFrom(I2C_ADDRESS(addr), bytes) == 0) {
     debug("request fail", addr);
     return false;
   }

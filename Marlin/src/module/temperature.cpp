@@ -324,6 +324,10 @@ volatile bool Temperature::raw_temps_ready = false;
   millis_t Temperature::next_auto_fan_check_ms = 0;
 #endif
 
+#if ENABLED(I2C_TEMPCONTROL)
+  millis_t Temperature::next_i2c_temp_send_ms = 0;
+#endif
+
 #if ENABLED(FAN_SOFT_PWM)
   uint8_t Temperature::soft_pwm_amount_fan[FAN_COUNT],
           Temperature::soft_pwm_count_fan[FAN_COUNT];
@@ -1030,7 +1034,20 @@ void Temperature::manage_heater() {
 
   if (!raw_temps_ready) return;
 
-  updateTemperaturesFromRawValues(); // also resets the watchdog
+
+
+  //ROBIN-- this one updates the temperature in the loop 
+  #if ENABLED(I2C_TEMPCONTROL)
+    millis_t ms = millis();
+    if ((next_i2c_temp_send_ms == 0 )or(ms >= next_i2c_temp_send_ms)){    //check if its time to request next temperature
+      //SERIAL_ECHOLN("requesting temp");
+      temp_hotend[0].celsius = i2c_temp_ctrl.request_hotend_temp();      //update hotend temperature
+      // Reset the watchdog on good temperature measurement
+      watchdog_refresh();
+    } 
+   #else
+    updateTemperaturesFromRawValues(); // also resets the watchdog
+  #endif
 
   #if ENABLED(HEATER_0_USES_MAX6675)
     if (temp_hotend[0].celsius > _MIN(HEATER_0_MAXTEMP, HEATER_0_MAX6675_TMAX - 1.0)) max_temp_error(H_E0);
@@ -1042,11 +1059,11 @@ void Temperature::manage_heater() {
     if (temp_hotend[1].celsius < _MAX(HEATER_1_MINTEMP, HEATER_1_MAX6675_TMIN + .01)) min_temp_error(H_E1);
   #endif
 
-  millis_t ms = millis();
 
   #if HOTENDS
 
-    HOTEND_LOOP() {
+    HOTEND_LOOP() 
+    {
       #if ENABLED(THERMAL_PROTECTION_HOTENDS)
         if (degHotend(e) > temp_range[e].maxtemp)
           _temp_error((heater_ind_t)e, str_t_thermal_runaway, GET_TEXT(MSG_THERMAL_RUNAWAY));
@@ -1061,7 +1078,15 @@ void Temperature::manage_heater() {
         thermal_runaway_protection(tr_state_machine[e], temp_hotend[e].celsius, temp_hotend[e].target, (heater_ind_t)e, THERMAL_PROTECTION_PERIOD, THERMAL_PROTECTION_HYSTERESIS);
       #endif
 
-      temp_hotend[e].soft_pwm_amount = (temp_hotend[e].celsius > temp_range[e].mintemp || is_preheating(e)) && temp_hotend[e].celsius < temp_range[e].maxtemp ? (int)get_pid_output_hotend(e) >> 1 : 0;
+      //ROBIN-- Send temperatures for hotend[0]
+      #if ENABLED(I2C_TEMPCONTROL)  //check if i2c tempcontrol is activated 
+        if ((next_i2c_temp_send_ms == 0 )||(ms >= next_i2c_temp_send_ms))
+        {    // check if its time to send current target temperature
+          i2c_temp_ctrl.send_target_temp(temp_hotend[0].target);
+        } 
+      #else
+        temp_hotend[e].soft_pwm_amount = (temp_hotend[e].celsius > temp_range[e].mintemp || is_preheating(e)) && temp_hotend[e].celsius < temp_range[e].maxtemp ? (int)get_pid_output_hotend(e) >> 1 : 0;
+      #endif
 
       #if WATCH_HOTENDS
         // Make sure temperature is increasing
@@ -1083,7 +1108,15 @@ void Temperature::manage_heater() {
 
   #endif // HOTENDS
 
-  #if HAS_AUTO_FAN
+  //ROBIN-- this checks if its time to reset the i2c send intervall timer
+  //ROBINTODO: could be better done with a flag so that it is not done multiple times 
+  if ((next_i2c_temp_send_ms == 0 )||(ms >= next_i2c_temp_send_ms))
+  {    // check if its time to update the send interval 
+    //SERIAL_ECHOLNPAIR("advance Send intervall", ms);
+    next_i2c_temp_send_ms = ms + I2C_SEND_INTERVALL;    // set the next time to request 
+  }  
+
+    #if HAS_AUTO_FAN
     if (ELAPSED(ms, next_auto_fan_check_ms)) { // only need to check fan state very infrequently
       checkExtruderAutoFans();
       next_auto_fan_check_ms = ms + 2500UL;
@@ -1576,7 +1609,8 @@ void Temperature::manage_heater() {
  * and this function is called from normal context
  * as it would block the stepper routine.
  */
-void Temperature::updateTemperaturesFromRawValues() {
+void Temperature::updateTemperaturesFromRawValues() 
+{
   #if ENABLED(HEATER_0_USES_MAX6675)
     temp_hotend[0].raw = READ_MAX6675(0);
   #endif
@@ -1584,6 +1618,8 @@ void Temperature::updateTemperaturesFromRawValues() {
     temp_hotend[1].raw = READ_MAX6675(1);
   #endif
   #if HOTENDS
+  //ROBIN-- hotend loop only loops through all available hotends 
+    //ROBIN-- use this position to request data from i2c slave 
     HOTEND_LOOP() temp_hotend[e].celsius = analog_to_celsius_hotend(temp_hotend[e].raw, e);
   #endif
   #if HAS_HEATED_BED
@@ -1673,6 +1709,7 @@ void Temperature::init() {
     #ifdef ALFAWISE_UX0
       OUT_WRITE_OD(HEATER_0_PIN, HEATER_0_INVERTING);
     #else
+      //ROBIN--This simply sets the initial state of the heater pin (false by default)
       OUT_WRITE(HEATER_0_PIN, HEATER_0_INVERTING);
     #endif
   #endif
